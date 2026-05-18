@@ -1,0 +1,185 @@
+{
+  "name":          "aws-s3",
+  "version":       "0.1.0",
+  "description":   "AWS S3 connector — buckets, files, folders, plus AWS-specific features (storage classes, server-side encryption, KMS, tags, requester pays, presigned URLs). For non-AWS S3-compatible providers (Wasabi, MinIO, R2, B2…) use the generic `s3` plugin. Mirrors n8n's AWS S3 node. Auth via a workspace `generic` config with accessKeyId + secretAccessKey + region (plus optional sessionToken / customEndpoint).",
+  "ui":            { "category": "storage", "icon": "amazon-s3" },
+  "primaryOutput": "result",
+
+  "configRefs": [
+    {
+      "name":        "aws-s3",
+      "type":        "generic",
+      "required":    true,
+      "description": "Generic config: { accessKeyId, secretAccessKey, region, sessionToken?, customEndpoint? }. The endpoint is derived from the region (s3.<region>.amazonaws.com) unless customEndpoint is set — useful for VPC interface endpoints, S3 Transfer Acceleration, AWS GovCloud, or AWS China regions."
+    }
+  ],
+
+  "inputSchema": {
+    "type": "object",
+    "required": ["operation"],
+    "properties": {
+      "operation": {
+        "type": "string",
+        "description": "Which AWS S3 call to run.",
+        "enum": [
+          "bucket.getAll",
+          "bucket.create",
+          "bucket.delete",
+          "bucket.search",
+          "bucket.location",
+          "file.getAll",
+          "file.head",
+          "file.upload",
+          "file.download",
+          "file.copy",
+          "file.delete",
+          "file.presignedUrl",
+          "folder.create",
+          "folder.getAll",
+          "folder.delete"
+        ]
+      },
+
+      "config": {
+        "type": "string",
+        "description": "Workspace config name to read credentials from. Default: 'aws-s3'."
+      },
+
+      "bucket": {
+        "type": "string",
+        "description": "Bucket name. Required for bucket.create / bucket.delete / bucket.search / bucket.location / file.* / folder.*."
+      },
+      "key": {
+        "type": "string",
+        "description": "Object key (path within the bucket). Required for file.{upload,download,copy,delete,head,presignedUrl}."
+      },
+
+      "prefix": {
+        "type": "string",
+        "description": "Key prefix filter. Used by bucket.search / file.getAll / folder.getAll / folder.delete."
+      },
+      "delimiter": {
+        "type": "string",
+        "default": "/",
+        "description": "Delimiter used to group keys into 'folders'. Default '/'. Used by folder.getAll."
+      },
+      "maxKeys": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 1000,
+        "default": 1000,
+        "description": "Page size for list operations (S3 caps this at 1000)."
+      },
+      "continuationToken": {
+        "type": "string",
+        "description": "Opaque pagination token from a previous list response."
+      },
+
+      "body": {
+        "type": "string",
+        "description": "Object content for file.upload. Plain text by default; set `bodyEncoding: 'base64'` to upload binary data."
+      },
+      "bodyEncoding": {
+        "type": "string",
+        "enum": ["utf8", "base64"],
+        "default": "utf8",
+        "description": "How to interpret `body`. Use 'base64' to upload binary files."
+      },
+      "contentType": {
+        "type": "string",
+        "description": "Content-Type header for file.upload. Default: application/octet-stream (binary) or text/plain (utf8)."
+      },
+      "metadata": {
+        "type": "object",
+        "description": "User metadata for file.upload. Each key is sent as x-amz-meta-<key>."
+      },
+      "tags": {
+        "type": "object",
+        "description": "Object tags for file.upload. URL-encoded into the x-amz-tagging header (e.g. {env:'prod', team:'data'} → 'env=prod&team=data')."
+      },
+
+      "acl": {
+        "type": "string",
+        "enum": ["private", "public-read", "public-read-write", "authenticated-read", "aws-exec-read", "bucket-owner-read", "bucket-owner-full-control"],
+        "description": "Canned ACL. Used by file.upload / folder.create / bucket.create. Note: many AWS accounts have ACLs disabled via 'Object Ownership = Bucket owner enforced'; in that case the ACL header is rejected."
+      },
+
+      "storageClass": {
+        "type": "string",
+        "enum": ["STANDARD", "REDUCED_REDUNDANCY", "STANDARD_IA", "ONEZONE_IA", "INTELLIGENT_TIERING", "GLACIER", "DEEP_ARCHIVE", "GLACIER_IR"],
+        "description": "Storage class for file.upload. AWS S3-specific. GLACIER and DEEP_ARCHIVE need restore-before-read."
+      },
+
+      "serverSideEncryption": {
+        "type": "string",
+        "enum": ["AES256", "aws:kms", "aws:kms:dsse"],
+        "description": "Server-side encryption for file.upload. Set ssekmsKeyId when using aws:kms or aws:kms:dsse."
+      },
+      "ssekmsKeyId": {
+        "type": "string",
+        "description": "KMS key ID or ARN. Required when serverSideEncryption is aws:kms / aws:kms:dsse and you want a non-default key."
+      },
+
+      "requesterPays": {
+        "type": "boolean",
+        "default": false,
+        "description": "Set x-amz-request-payer: requester. Required when reading from or writing to a bucket configured as Requester Pays."
+      },
+
+      "copySource": {
+        "type": "string",
+        "description": "Source for file.copy in `bucket/key` form (e.g. 'src-bucket/path/to/file.txt'). Destination is bucket+key."
+      },
+
+      "folderName": {
+        "type": "string",
+        "description": "Folder name for folder.create. Will be created as an empty object with key ending in '/'."
+      },
+
+      "responseEncoding": {
+        "type": "string",
+        "enum": ["utf8", "base64"],
+        "default": "base64",
+        "description": "How file.download returns the body. 'base64' is safe for binary. 'utf8' for text-only objects."
+      },
+
+      "presignedMethod": {
+        "type": "string",
+        "enum": ["GET", "PUT"],
+        "default": "GET",
+        "description": "HTTP method to sign for file.presignedUrl."
+      },
+      "presignedExpiresIn": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 604800,
+        "default": 900,
+        "description": "Expiry in seconds for file.presignedUrl. Max 604800 (7 days)."
+      },
+
+      "region": {
+        "type": "string",
+        "description": "Override the region from the config for this call only."
+      },
+
+      "timeoutMs": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 120000,
+        "default": 30000
+      }
+    }
+  },
+
+  "outputSchema": {
+    "type": "object",
+    "required": ["ok", "operation"],
+    "properties": {
+      "ok":        { "type": "boolean" },
+      "operation": { "type": "string", "description": "Echo of the input operation that ran." },
+      "status":    { "type": "integer", "description": "HTTP status from the underlying S3 call (omitted for file.presignedUrl)." },
+      "result":    { "description": "Operation-specific payload. See README for shapes." },
+      "url":       { "type": "string", "description": "Deep-link to the affected bucket/object on the AWS endpoint (when applicable)." }
+    }
+  }
+}

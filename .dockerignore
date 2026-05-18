@@ -1,0 +1,9 @@
+.git
+.gitignore
+.DS_Store
+node_modules
+npm-debug.log
+*.tgz
+README.md
+LICENSE
+publish-docker.sh
