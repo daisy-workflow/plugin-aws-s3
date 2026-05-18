@@ -1,0 +1,185 @@
+# ============================================================================
+# Release pipeline
+# ============================================================================
+# Fires on a SemVer tag push (vMAJOR.MINOR.PATCH). Publishes the package to
+# the npm registry and the container image to Docker Hub, then cuts a
+# GitHub Release with auto-generated notes.
+#
+# To release:
+#   1. Bump "version" in package.json
+#   2. git commit + git push
+#   3. git tag v0.1.0 && git push origin v0.1.0
+#   4. Sit back — GitHub Actions does the rest.
+#
+# Required repository secrets (Settings → Secrets and variables → Actions):
+#   NPM_TOKEN          npm automation token with publish access to the
+#                      @daisy-workflow scope. Create at npmjs.com → Access
+#                      Tokens → Generate New Token → Automation.
+#   DOCKERHUB_USERNAME Docker Hub user that owns the daisy-plugin-* images
+#                      (currently: vivek13186).
+#   DOCKERHUB_TOKEN    Docker Hub access token (Account → Security →
+#                      New Access Token, read + write + delete).
+#
+# Derived values (no need to edit per repo):
+#   npm name   = read from package.json (e.g. @daisy-workflow/plugin-jira)
+#   docker img = vivek13186/daisy-<plugin-name>  (e.g. vivek13186/daisy-plugin-jira)
+#   version    = read from package.json; tag must match.
+#
+# Action versions:
+#   actions/checkout@v5 and actions/setup-node@v5 run on Node 24 — required
+#   to avoid the deprecation warning announced 2025-09-19, where GitHub
+#   begins migrating JavaScript-based actions off Node 20 on 2026-06-02.
+#   The docker/* actions (login@v3, setup-buildx@v3, setup-qemu@v3,
+#   build-push@v6) are already on majors that ship Node 24-compatible
+#   minor releases, so no version bump needed there.
+# ============================================================================
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    # Manual fallback — useful when a previous run failed half-way through
+    # and we want to re-publish without bumping the tag.
+
+permissions:
+  contents: write   # for `gh release create`
+  id-token: write   # for `npm publish --provenance`
+
+jobs:
+
+  # --------------------------------------------------------------------------
+  # 1. Verify — package.json sanity check + derive image name once.
+  # --------------------------------------------------------------------------
+  verify:
+    name: Verify version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      image:   ${{ steps.read.outputs.image }}
+      npm:     ${{ steps.read.outputs.npm }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Read package.json
+        id: read
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          NPM_NAME=$(node -p "require('./package.json').name")
+          # Strip the @daisy-workflow/ scope to get the short plugin name,
+          # then prefix with the Docker Hub namespace + daisy- convention.
+          SHORT_NAME="${NPM_NAME#@daisy-workflow/}"
+          IMAGE="vivek13186/daisy-${SHORT_NAME}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "npm=$NPM_NAME"    >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE"     >> "$GITHUB_OUTPUT"
+          echo "::notice::Releasing $NPM_NAME@$VERSION → $IMAGE:$VERSION"
+
+      - name: Check tag matches package.json
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          EXPECTED="v${{ steps.read.outputs.version }}"
+          if [ "$TAG" != "$EXPECTED" ]; then
+            echo "::error::Tag '$TAG' does not match package.json version '$EXPECTED'."
+            echo "Either fix the tag or bump package.json before tagging."
+            exit 1
+          fi
+
+  # --------------------------------------------------------------------------
+  # 2. npm — publish with provenance attestation.
+  # --------------------------------------------------------------------------
+  npm:
+    name: Publish to npm
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5   # v5 runs on Node 24
+        with:
+          node-version: "22"           # Node version used to BUILD/PUBLISH the package (independent of the runtime above)
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: npm install --omit=dev
+
+      - name: npm publish
+        # --access public is required for scoped packages on the free tier.
+        # --provenance ties the package to this exact workflow run; npm
+        # surfaces it as a "verified" badge on the package page.
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  # --------------------------------------------------------------------------
+  # 3. Docker — multi-arch build + push to Docker Hub.
+  # --------------------------------------------------------------------------
+  docker:
+    name: Build & push Docker image
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up QEMU
+        # Lets us cross-compile arm64 on an amd64 GitHub runner.
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build & push (linux/amd64, linux/arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context:   .
+          file:      ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push:      true
+          tags: |
+            ${{ needs.verify.outputs.image }}:${{ needs.verify.outputs.version }}
+            ${{ needs.verify.outputs.image }}:latest
+          # GitHub Actions cache keeps subsequent builds fast (especially
+          # the arm64 leg, which would otherwise emulate from scratch).
+          cache-from: type=gha
+          cache-to:   type=gha,mode=max
+          # OCI labels so the image is self-describing on Docker Hub.
+          labels: |
+            org.opencontainers.image.title=${{ needs.verify.outputs.npm }}
+            org.opencontainers.image.version=${{ needs.verify.outputs.version }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=MIT
+
+  # --------------------------------------------------------------------------
+  # 4. Cut a GitHub Release with notes generated from commit history.
+  #    Skipped on workflow_dispatch — manual re-publishes don't create a
+  #    release because there's no new tag to attach it to.
+  # --------------------------------------------------------------------------
+  github-release:
+    name: GitHub release
+    needs: [verify, npm, docker]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # full history so generate-notes can diff to prev tag
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF#refs/tags/}" \
+            --title "v${{ needs.verify.outputs.version }}" \
+            --generate-notes
