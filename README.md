@@ -5,8 +5,8 @@ support for AWS-only features: storage classes, server-side encryption,
 KMS, object tags, requester pays, and presigned URLs. Mirrors n8n's
 [AWS S3 node](https://docs.n8n.io/integrations/builtin/app-nodes/n8n-nodes-base.awss3/).
 
+[![Docker Hub](https://img.shields.io/badge/Docker%20Hub-Image-blue?logo=docker)](https://hub.docker.com/repository/docker/vivek13186/daisy-plugin-aws-s3)
 
-[![Docker Hub](https://img.shields.io/badge/Docker%20Hub-Image-blue?logo=docker)](https://hub.docker.com/r/yourusername/yourimage)
 
 > Need Wasabi, MinIO, Cloudflare R2, DigitalOcean Spaces, Backblaze B2,
 > or another S3-compatible provider? Use the **generic `s3` plugin**
