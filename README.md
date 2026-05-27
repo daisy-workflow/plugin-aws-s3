@@ -1,4 +1,4 @@
-# aws-s3 plugin for Daisy-workflow
+# aws-s3 plugin for Daisy AI Orchestrator
 
 One Daisy node that talks to **AWS S3 specifically** — with full
 support for AWS-only features: storage classes, server-side encryption,
